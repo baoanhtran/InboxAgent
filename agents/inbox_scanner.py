@@ -7,9 +7,8 @@ Custom (not via factory) because finalize_node must:
 
 Guard: if email_content already populated, skip re-fetch to prevent corruption.
 
-MCP server tool names: list_emails / get_email (NOT list_messages / get_message).
-list_emails params: {unreadOnly: bool, limit: int}
-get_email params:   {messageId: str}
+The LLM is only given list_emails — get_email is called programmatically in
+scanner_finalize_node to avoid the LLM using a LangChain tool_call_id as the messageId.
 """
 
 from __future__ import annotations
@@ -17,69 +16,83 @@ from __future__ import annotations
 import re
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
-from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
-from mcp_client import get_readonly_gmail_tools
-from nodes.email_utils import (
-    extract_message_id_from_list_result,
-    format_email_from_get_result,
-    extract_text_from_result,
-)
+from llm_config import get_llm
+from gmail.client import get_readonly_gmail_tools
+from gmail.utils import extract_attachments_from_get_result, format_email_from_get_result
 from state import InboxScannerState
 
 _SYSTEM_PROMPT = """\
 You are an inbox scanner agent. Your job is to:
-1. Use list_emails to find the latest unread email in the inbox.
-2. Use get_email to fetch its full content.
-3. Summarize what you found: who sent it, subject, brief description of content.
+1. Call list_emails with unreadOnly=true and limit=1 to find the latest unread email.
+2. After receiving the result, write a concise summary (3-5 sentences): who sent it,
+   the subject, and a brief description of the content.
 
-Call list_emails first with unreadOnly=true and limit=1.
-Then call get_email with the messageId from the result.
-Finally, write a concise narrative summary (3-5 sentences) about the email you found.
+Important: do NOT call get_email. The system will fetch the full email separately.
+In your summary, include the exact message ID you received from list_emails.
 """
 
-_UUID_RE = re.compile(
-    r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}", re.IGNORECASE
-)
-
-_llm: ChatOpenAI | None = None
+_llm = None
 
 
-def _get_llm() -> ChatOpenAI:
+def _get_llm():
     global _llm
     if _llm is None:
-        _llm = ChatOpenAI(model="gpt-4o", temperature=0)
+        _llm = get_llm("inbox_scanner", temperature=0)
     return _llm
 
 
-def _extract_message_id_from_history(messages: list) -> str:
-    """Scan ToolMessage contents for a Gmail UUID message ID.
+_UUID_RE = re.compile(
+    r"([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})",
+    re.IGNORECASE,
+)
 
-    Looks for 'ID: <uuid>' pattern first (list_emails format),
-    then falls back to any UUID in the content.
+
+def _is_lc_id(text: str, match_start: int) -> bool:
+    """Return True if the UUID at match_start is a LangChain tool_call_id (lc_ prefix)."""
+    prefix_start = max(0, match_start - 3)
+    return "lc_" in text[prefix_start:match_start]
+
+
+def _extract_message_id_from_history(messages: list) -> str:
+    """Scan ToolMessage contents for a Gmail message ID.
+
+    Tries multiple patterns in order of specificity.
+    Explicitly skips LangChain tool_call_ids (lc_ prefix).
     """
     for msg in reversed(messages):
         if not isinstance(msg, ToolMessage):
             continue
         content = msg.content if isinstance(msg.content, str) else str(msg.content)
 
-        # list_emails format: "ID: <uuid>\nDate: ..."
-        m = re.search(r"^ID:\s*([a-f0-9\-]{36})", content, re.MULTILINE | re.IGNORECASE)
+        # Pattern 1: "ID: <value>" line (list_emails plain-text format)
+        m = re.search(r"^ID:\s*(\S+)", content, re.MULTILINE | re.IGNORECASE)
         if m:
-            return m.group(1)
+            val = m.group(1).strip().rstrip(",")
+            if not val.startswith("lc_"):
+                return val
 
-        # get_email format: messageId in JSON headers
-        m = re.search(r'messageId:\s*"([a-f0-9\-]{36})"', content)
+        # Pattern 2: JSON "id": "..." field
+        m = re.search(r'"id"\s*:\s*"([^"]+)"', content)
         if m:
-            return m.group(1)
+            val = m.group(1)
+            if not val.startswith("lc_"):
+                return val
 
-        # Any UUID as last resort
-        m = _UUID_RE.search(content)
+        # Pattern 3: YAML/JSON messageId field
+        m = re.search(r'messageId:\s*"?([^\s",]+)"?', content)
         if m:
-            return m.group(0)
+            val = m.group(1)
+            if not val.startswith("lc_"):
+                return val
+
+        # Pattern 4: any UUID in content, excluding lc_-prefixed ones
+        for m in _UUID_RE.finditer(content):
+            if not _is_lc_id(content, m.start()):
+                return m.group(1)
 
     return ""
 
@@ -90,14 +103,17 @@ def _extract_message_id_from_history(messages: list) -> str:
 
 async def scanner_agent_node(state: InboxScannerState) -> dict:
     tools = await get_readonly_gmail_tools()
-    llm = _get_llm().bind_tools(list(tools.values()))
+    # Only give list_emails — get_email is called programmatically in scanner_finalize_node.
+    # Giving the LLM get_email causes it to call with the wrong ID (LangChain tool_call_id).
+    list_only = {k: v for k, v in tools.items() if k == "list_emails"}
+    llm = _get_llm().bind_tools(list(list_only.values()))
 
     messages = state.get("messages") or []
 
     if not messages:
         messages = [
             SystemMessage(_SYSTEM_PROMPT),
-            HumanMessage("Please scan the inbox and fetch the latest unread email."),
+            HumanMessage("Please scan the inbox and find the latest unread email."),
         ]
 
     response = await llm.ainvoke(messages)
@@ -121,12 +137,15 @@ async def scanner_tool_node(state: InboxScannerState) -> dict:
 
     tool_messages = []
     tools = await get_readonly_gmail_tools()
+    list_only = {k: v for k, v in tools.items() if k == "list_emails"}
 
     for tc in tool_calls:
         if approval.get("approved", True):
             try:
-                result = await tools[tc["name"]].ainvoke(tc["args"])
+                result = await list_only[tc["name"]].ainvoke(tc["args"])
                 content = str(result)
+            except KeyError:
+                content = f"Tool '{tc['name']}' is not available to the scanner."
             except Exception as e:
                 content = f"Error calling {tc['name']}: {e}"
         else:
@@ -148,19 +167,26 @@ async def scanner_finalize_node(state: InboxScannerState) -> dict:
 
     # Fetch email_content directly (never trust LLM output for this)
     email_content = state.get("email_content", "")
+    email_attachments: list = state.get("email_attachments") or []
+    raw_result = None
+
     if message_id and not email_content:
         try:
             tools = await get_readonly_gmail_tools()
-            result = await tools["get_email"].ainvoke({"messageId": message_id})
-            email_content = format_email_from_get_result(result, message_id)
+            raw_result = await tools["get_email"].ainvoke({"messageId": message_id})
+            email_content = format_email_from_get_result(raw_result, message_id)
+            email_attachments = extract_attachments_from_get_result(raw_result)
         except Exception as e:
             email_content = f"(Failed to fetch email content: {e})"
+
+    status = "scanned" if message_id else "no_unread_emails"
 
     return {
         "message_id": message_id,
         "email_content": email_content,
+        "email_attachments": email_attachments,
         "inbox_results": inbox_results,
-        "status": "scanned",
+        "status": status,
     }
 
 

@@ -12,12 +12,12 @@ from __future__ import annotations
 from typing import Callable, Type
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
-from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
-from mcp_client import get_gmail_tools, get_readonly_gmail_tools
+from llm_config import get_llm
+from gmail.client import get_gmail_tools, get_readonly_gmail_tools
 
 
 def create_specialist_agent(
@@ -28,6 +28,7 @@ def create_specialist_agent(
     agent_name: str,
     seed_message_fn: Callable,
     readonly: bool = True,
+    use_tools: bool = True,
     temperature: float = 0,
 ) -> CompiledStateGraph:
     """Build and compile a specialist ReAct subgraph.
@@ -40,22 +41,27 @@ def create_specialist_agent(
         agent_name:       Shown in interrupt approval payloads.
         seed_message_fn:  callable(state) -> str — the initial HumanMessage content.
         readonly:         If True, use get_readonly_gmail_tools (no send_message).
+        use_tools:        If False, LLM gets no tools (composer, reviewer).
         temperature:      LLM temperature.
     """
-    _llm: list[ChatOpenAI] = [None]  # mutable container for lazy init
+    _llm: list = [None]  # mutable container for lazy init
 
-    def _get_llm() -> ChatOpenAI:
+    def _get_llm():
         if _llm[0] is None:
-            _llm[0] = ChatOpenAI(model="gpt-4o", temperature=temperature)
+            _llm[0] = get_llm(agent_name, temperature)
         return _llm[0]
 
     async def agent_node(state) -> dict:
-        tools = (
-            await get_readonly_gmail_tools()
-            if readonly
-            else await get_gmail_tools()
-        )
-        llm = _get_llm().bind_tools(list(tools.values()))
+        if use_tools:
+            tools = (
+                await get_readonly_gmail_tools()
+                if readonly
+                else await get_gmail_tools()
+            )
+            llm = _get_llm().bind_tools(list(tools.values()))
+        else:
+            tools = {}
+            llm = _get_llm()
 
         messages = state.get("messages") or []
 
@@ -68,7 +74,7 @@ def create_specialist_agent(
         response = await llm.ainvoke(messages)
         return {"messages": [response]}
 
-    async def tool_node(state) -> dict:
+    async def tool_node(state) -> dict:  # only reachable when use_tools=True
         last = state["messages"][-1]
         tool_calls = last.tool_calls
 
@@ -91,18 +97,18 @@ def create_specialist_agent(
         )
 
         for tc in tool_calls:
-                if approval.get("approved", True):
-                    try:
-                        result = await tools[tc["name"]].ainvoke(tc["args"])
-                        content = str(result)
-                    except Exception as e:
-                        content = f"Error calling {tc['name']}: {e}"
-                else:
-                    content = f"Tool call denied by user: {approval.get('reason', '')}"
+            if approval.get("approved", True):
+                try:
+                    result = await tools[tc["name"]].ainvoke(tc["args"])
+                    content = str(result)
+                except Exception as e:
+                    content = f"Error calling {tc['name']}: {e}"
+            else:
+                content = f"Tool call denied by user: {approval.get('reason', '')}"
 
-                tool_messages.append(
-                    ToolMessage(content=content, tool_call_id=tc["id"])
-                )
+            tool_messages.append(
+                ToolMessage(content=content, tool_call_id=tc["id"])
+            )
 
         return {"messages": tool_messages}
 

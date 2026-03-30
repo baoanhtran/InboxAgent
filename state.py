@@ -11,6 +11,8 @@ class AgentState(TypedDict):
     """Outer graph state — single source of truth shared by all nodes."""
     message_id: str
     email_content: str
+    email_attachments: list      # [{resourceUri, filename, mimeType}, ...] extracted by scanner
+    attachment_summary: str      # OpenAI summary of all attachments (always uses gpt-4o)
     inbox_results: str           # scanner narrative summary
     thread_context: str          # thread researcher findings
     sender_profile: str          # sender profiler findings
@@ -27,6 +29,8 @@ class CoordinatorState(TypedDict):
     # Shared keys with AgentState (auto passed in/out)
     message_id: str
     email_content: str
+    email_attachments: list
+    attachment_summary: str
     inbox_results: str
     thread_context: str
     sender_profile: str
@@ -43,6 +47,7 @@ class InboxScannerState(TypedDict):
     """Inbox scanner subgraph state."""
     message_id: str
     email_content: str
+    email_attachments: list      # propagated back to AgentState after scanning
     inbox_results: str
     status: str
     messages: Annotated[list, add_messages]
@@ -67,6 +72,7 @@ class SenderProfilerState(TypedDict):
 class ComposerState(TypedDict):
     """Composer subgraph state."""
     email_content: str
+    attachment_summary: str      # summaries of attachments to include in reply context
     thread_context: str
     sender_profile: str
     review_notes: str

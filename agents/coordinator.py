@@ -17,12 +17,12 @@ import json
 import re
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
-from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
-from mcp_client import get_readonly_gmail_tools
+from llm_config import get_llm
+from gmail.client import get_readonly_gmail_tools
 from state import CoordinatorState
 
 _SYSTEM_PROMPT = """\
@@ -31,6 +31,7 @@ Your job is to decide which specialist to dispatch next based on the current sta
 
 Available specialists:
 - inbox_scanner: Lists unread emails and fetches the target email content. ALWAYS run first if email_content is empty.
+- attachment_analyzer: Reads and summarizes email attachments using OpenAI vision/file APIs. Run if email_attachments is non-empty AND attachment_summary is empty.
 - thread_researcher: Fetches the full email thread for context on the conversation history.
 - sender_profiler: Researches the sender's previous emails to understand their communication style and relationship.
 - composer: Drafts a professional reply using all gathered context.
@@ -38,11 +39,13 @@ Available specialists:
 
 Routing rules:
 1. If email_content is empty → ALWAYS dispatch inbox_scanner first.
-2. Minimum path: inbox_scanner → composer → FINISH.
-3. Do not dispatch the same specialist twice unless there is a genuine reason (e.g., composer after reviewer revision request).
-4. If reviewer outputs APPROVE → output FINISH immediately.
-5. Use Gmail tools (list_emails, get_email) for quick lookups if needed before deciding.
-6. Be efficient — skip specialists whose output is not needed for a straightforward email.
+2. If email has attachments (ATTACHMENTS count > 0) AND attachment_summary is empty → dispatch attachment_analyzer before composer.
+3. Minimum path: inbox_scanner → composer → FINISH.
+4. If email has attachments: inbox_scanner → attachment_analyzer → composer → FINISH.
+5. Do not dispatch the same specialist twice unless there is a genuine reason (e.g., composer after reviewer revision request).
+6. If reviewer outputs APPROVE → output FINISH immediately.
+7. Use Gmail tools (list_emails, get_email) for quick lookups if needed before deciding.
+8. Be efficient — skip specialists whose output is not needed for a straightforward email.
 
 Output your decision as JSON only:
 {"next": "<specialist_name_or_FINISH>", "reason": "<brief explanation>"}
@@ -50,15 +53,15 @@ Output your decision as JSON only:
 Valid values for "next": inbox_scanner, thread_researcher, sender_profiler, composer, reviewer, FINISH
 """
 
-_SPECIALISTS = {"inbox_scanner", "thread_researcher", "sender_profiler", "composer", "reviewer", "FINISH"}
+_SPECIALISTS = {"inbox_scanner", "attachment_analyzer", "thread_researcher", "sender_profiler", "composer", "reviewer", "FINISH"}
 
-_llm: ChatOpenAI | None = None
+_llm = None
 
 
-def _get_llm() -> ChatOpenAI:
+def _get_llm():
     global _llm
     if _llm is None:
-        _llm = ChatOpenAI(model="gpt-4o", temperature=0)
+        _llm = get_llm("coordinator", temperature=0)
     return _llm
 
 
@@ -80,12 +83,20 @@ def _build_state_summary(state: CoordinatorState) -> str:
     else:
         email_preview = "  (not yet fetched)"
 
+    attachments = state.get("email_attachments") or []
+    att_count = len(attachments)
+    att_names = ", ".join(a.get("filename", "?") for a in attachments) if attachments else "none"
+
     return f"""\
 === CURRENT STATE ===
 Iteration: {iteration} / Status: {status or 'none'}
 
 EMAIL (first 6 lines):
 {email_preview}
+
+ATTACHMENTS: {att_count} file(s) — {att_names}
+
+ATTACHMENT SUMMARY: {_preview(state.get('attachment_summary', ''))}
 
 INBOX SCAN RESULTS: {_preview(state.get('inbox_results', ''))}
 

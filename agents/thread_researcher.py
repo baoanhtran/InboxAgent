@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from nodes.agent_factory import create_specialist_agent
+from agents.factory import create_specialist_agent
 from state import ThreadResearcherState
 
 _SYSTEM_PROMPT = """\

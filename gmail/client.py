@@ -1,7 +1,7 @@
 """MCP client factory for the Gmail MCP server.
 
-Configuration is loaded from mcp.json (same directory as this file), which
-follows the standard MCP server config format:
+Configuration is loaded from mcp.json at the project root, which follows
+the standard MCP server config format:
 
     {
       "mcpServers": {
@@ -28,7 +28,8 @@ from typing import Any
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
-_MCP_JSON = Path(__file__).parent / "mcp.json"
+# mcp.json lives at the project root (one level above this file's package)
+_MCP_JSON = Path(__file__).parent.parent / "mcp.json"
 
 
 def _load_mcp_config() -> dict:
@@ -53,10 +54,7 @@ def _make_client() -> MultiServerMCPClient:
 
 
 async def get_gmail_tools(client: MultiServerMCPClient | None = None) -> dict[str, Any]:
-    """Core Gmail tools: list_emails, get_email, reply_to_email, mark_email_as_read.
-
-    If no client is passed, a new one is created automatically.
-    """
+    """Full Gmail tools: list_emails, get_email, reply_to_email, mark_email_as_read."""
     if client is None:
         client = _make_client()
     all_tools = await client.get_tools()
@@ -67,11 +65,38 @@ async def get_gmail_tools(client: MultiServerMCPClient | None = None) -> dict[st
 async def get_readonly_gmail_tools(client: MultiServerMCPClient | None = None) -> dict[str, Any]:
     """Read-only subset: list_emails + get_email only. No reply or mark tools.
 
-    Use this in every agent except mcp_executor_node to prevent accidental sends.
-    If no client is passed, a new one is created automatically.
+    Use this in every agent except gmail.executor to prevent accidental sends.
     """
     if client is None:
         client = _make_client()
     all_tools = await client.get_tools()
     allowed = {"list_emails", "get_email"}
     return {tool.name: tool for tool in all_tools if tool.name in allowed}
+
+
+async def read_mcp_resource(uri: str) -> tuple[str, str]:
+    """Read a MCP resource by URI via MultiServerMCPClient.get_resources().
+
+    Returns (base64_data, mime_type).
+    Both bytes and str data are returned base64-encoded for uniform handling.
+    The caller decodes based on mime_type.
+    """
+    import base64
+
+    client = _make_client()
+    blobs = await client.get_resources(server_name="gmail", uris=uri)
+
+    if not blobs:
+        raise RuntimeError(f"No resource returned for URI: {uri}")
+
+    blob = blobs[0]
+    mime_type = blob.mimetype or "application/octet-stream"
+    data = blob.data
+
+    if isinstance(data, bytes):
+        b64 = base64.b64encode(data).decode("ascii")
+    else:
+        # str — encode to bytes first
+        b64 = base64.b64encode(str(data).encode("utf-8")).decode("ascii")
+
+    return b64, mime_type

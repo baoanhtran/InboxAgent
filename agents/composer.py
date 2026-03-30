@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from nodes.agent_factory import create_specialist_agent
+from agents.factory import create_specialist_agent
 from state import ComposerState
 
 _SYSTEM_PROMPT = """\
@@ -11,6 +11,7 @@ professional reply to the email you are given.
 
 You have access to full context:
 - The original email
+- Attachment summaries (if available — reference relevant content from attachments)
 - Thread history (if available)
 - Sender profile (if available)
 - Reviewer notes from a previous draft (if available — address every revision point)
@@ -23,6 +24,9 @@ to the relationship and context provided.
 
 def _seed(state: ComposerState) -> str:
     parts = [f"Please write a reply to this email:\n\n{state['email_content']}"]
+
+    if state.get("attachment_summary"):
+        parts.append(f"\n\n--- ATTACHMENT SUMMARIES ---\n{state['attachment_summary']}")
 
     if state.get("thread_context"):
         parts.append(f"\n\n--- THREAD CONTEXT ---\n{state['thread_context']}")
@@ -46,6 +50,6 @@ def create_composer():
         output_status="draft_ready",
         agent_name="composer",
         seed_message_fn=_seed,
-        readonly=True,
+        use_tools=False,
         temperature=0.3,
     )

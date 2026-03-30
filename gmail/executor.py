@@ -7,7 +7,7 @@ Then marks the original email as read via mark_email_as_read.
 
 from __future__ import annotations
 
-from mcp_client import get_gmail_tools
+from gmail.client import get_gmail_tools
 from state import AgentState
 
 
@@ -33,7 +33,6 @@ async def mcp_executor_node(state: AgentState) -> dict:
         "replyAll": False,
     })
 
-    # Mark original email as read now that we've handled it
     if "mark_email_as_read" in tools:
         await tools["mark_email_as_read"].ainvoke({"messageId": message_id})
 

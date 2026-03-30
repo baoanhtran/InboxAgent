@@ -25,6 +25,8 @@ load_dotenv()
 _INITIAL_STATE = {
     "message_id": "",
     "email_content": "",
+    "email_attachments": [],
+    "attachment_summary": "",
     "inbox_results": "",
     "thread_context": "",
     "sender_profile": "",
@@ -192,6 +194,16 @@ def _print_progress(event: dict) -> None:
         print(f"  [Scanner]     {inbox[:80].strip()}..." if len(inbox) > 80 else f"  [Scanner]     {inbox.strip()}")
         _printed.add("scanned")
 
+    if status in ("attachments_analyzed", "no_attachments") and "attachments" not in _printed:
+        atts = event.get("email_attachments") or []
+        summary = event.get("attachment_summary", "")
+        if status == "no_attachments":
+            print(f"  [Analyzer]    No attachments found ({len(atts)} parsed from headers).")
+        else:
+            first_line = summary.splitlines()[0] if summary else "(empty)"
+            print(f"  [Analyzer]    {len(atts)} attachment(s) — {first_line[:80]}")
+        _printed.add("attachments")
+
     if status == "researched" and "researched" not in _printed:
         print("  [Researcher]  Thread context gathered.")
         _printed.add("researched")
@@ -219,11 +231,15 @@ def _print_progress(event: dict) -> None:
 
 def _print_final(values: dict) -> None:
     print("\n" + "=" * 60)
-    print(f"  Status       : {values.get('status', 'N/A')}")
-    print(f"  Iterations   : {values.get('coordinator_iterations', 0)}")
-    feedback = values.get("human_feedback")
-    if feedback:
-        print(f"  Feedback     : {feedback}")
+    status = values.get('status', 'N/A')
+    if status == "no_unread_emails":
+        print("  No unread emails found. Nothing to do.")
+    else:
+        print(f"  Status       : {status}")
+        print(f"  Iterations   : {values.get('coordinator_iterations', 0)}")
+        feedback = values.get("human_feedback")
+        if feedback:
+            print(f"  Feedback     : {feedback}")
     print("=" * 60 + "\n")
 
 

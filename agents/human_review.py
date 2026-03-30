@@ -12,7 +12,7 @@ Expected resume value format:
   {"action": "edit", "revised_draft": "<new text>", "comment": "<optional note>"}
     — replace the draft with the human-edited version.
   {"action": "reject"}
-    — send the email back to the DeepAgent for re-drafting.
+    — send the email back to the coordinator for re-drafting.
 """
 
 from __future__ import annotations
@@ -25,7 +25,6 @@ from state import AgentState
 async def human_review_node(state: AgentState) -> dict:
     """Pause for human review of the draft reply."""
 
-    # Execution pauses here. The dict below is surfaced to the caller.
     human_input = interrupt(
         {
             "message": "Please review the draft reply and respond with an action.",
@@ -40,7 +39,6 @@ async def human_review_node(state: AgentState) -> dict:
         }
     )
 
-    # --- Process the human's response ---
     if isinstance(human_input, dict):
         action = human_input.get("action", "approve")
 

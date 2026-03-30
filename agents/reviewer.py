@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from nodes.agent_factory import create_specialist_agent
+from agents.factory import create_specialist_agent
 from state import ReviewerState
 
 _SYSTEM_PROMPT = """\
@@ -48,6 +48,6 @@ def create_reviewer():
         output_status="reviewed",
         agent_name="reviewer",
         seed_message_fn=_seed,
-        readonly=True,
+        use_tools=False,
         temperature=0,
     )
