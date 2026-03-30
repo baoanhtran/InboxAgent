@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "gmail": {
+      "url": "https://your-mcp-server-url/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_TOKEN_HERE"
+      }
+    }
+  }
+}
