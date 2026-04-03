@@ -27,7 +27,7 @@ def _seed(state: ThreadResearcherState) -> str:
     )
 
 
-def create_thread_researcher():
+def create_thread_researcher(use_interrupt: bool = True):
     return create_specialist_agent(
         state_class=ThreadResearcherState,
         system_prompt=_SYSTEM_PROMPT,
@@ -37,4 +37,5 @@ def create_thread_researcher():
         seed_message_fn=_seed,
         readonly=True,
         temperature=0,
+        use_interrupt=use_interrupt,
     )

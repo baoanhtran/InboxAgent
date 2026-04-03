@@ -26,6 +26,7 @@ Graph topology:
 from __future__ import annotations
 
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.store.memory import InMemoryStore
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
@@ -39,6 +40,8 @@ from agents.reviewer import create_reviewer
 from agents.human_review import human_review_node
 from gmail.executor import mcp_executor_node
 from state import AgentState
+
+_memory_store = InMemoryStore()
 
 _MAX_ITERATIONS = 10
 
@@ -64,7 +67,7 @@ def build_graph() -> CompiledStateGraph:
     graph.add_node("inbox_scanner_agent",      create_inbox_scanner())
     graph.add_node("attachment_analyzer_agent",attachment_analyzer_node)
     graph.add_node("thread_researcher_agent",  create_thread_researcher())
-    graph.add_node("sender_profiler_agent",    create_sender_profiler())
+    graph.add_node("sender_profiler_agent",    create_sender_profiler(store=_memory_store))
     graph.add_node("composer_agent",           create_composer())
     graph.add_node("reviewer_agent",           create_reviewer())
     graph.add_node("human_review_node",        human_review_node)
@@ -108,4 +111,4 @@ def build_graph() -> CompiledStateGraph:
 
     graph.add_edge("mcp_executor_node", END)
 
-    return graph.compile(checkpointer=MemorySaver())
+    return graph.compile(checkpointer=MemorySaver(), store=_memory_store)

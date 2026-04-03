@@ -30,6 +30,7 @@ def create_specialist_agent(
     readonly: bool = True,
     use_tools: bool = True,
     temperature: float = 0,
+    use_interrupt: bool = True,
 ) -> CompiledStateGraph:
     """Build and compile a specialist ReAct subgraph.
 
@@ -43,6 +44,9 @@ def create_specialist_agent(
         readonly:         If True, use get_readonly_gmail_tools (no send_message).
         use_tools:        If False, LLM gets no tools (composer, reviewer).
         temperature:      LLM temperature.
+        use_interrupt:    If False, tool calls run directly without asking for
+                          human approval (needed for subagents spawned via the
+                          DeepAgent task tool, which cannot propagate interrupts).
     """
     _llm: list = [None]  # mutable container for lazy init
 
@@ -78,16 +82,19 @@ def create_specialist_agent(
         last = state["messages"][-1]
         tool_calls = last.tool_calls
 
-        approval = interrupt({
-            "type": "tool_approval",
-            "agent": agent_name,
-            "task": agent_name,
-            "tool_name": ", ".join(tc["name"] for tc in tool_calls),
-            "tool_args": tool_calls[0]["args"] if len(tool_calls) == 1 else {
-                tc["name"]: tc["args"] for tc in tool_calls
-            },
-            "message": f"[{agent_name}] wants to call: {', '.join(tc['name'] for tc in tool_calls)}",
-        })
+        if use_interrupt:
+            approval = interrupt({
+                "type": "tool_approval",
+                "agent": agent_name,
+                "task": agent_name,
+                "tool_name": ", ".join(tc["name"] for tc in tool_calls),
+                "tool_args": tool_calls[0]["args"] if len(tool_calls) == 1 else {
+                    tc["name"]: tc["args"] for tc in tool_calls
+                },
+                "message": f"[{agent_name}] wants to call: {', '.join(tc['name'] for tc in tool_calls)}",
+            })
+        else:
+            approval = {"approved": True}
 
         tool_messages = []
         tools = (
